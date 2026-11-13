@@ -7,9 +7,12 @@ import (
 )
 
 type Product struct {
-	Name  string
-	Price float64
-	Stock int
+	ProductID   int     `json:"productID"`
+	CategoryID  int     `json:"categoryID"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Price       float64 `json:"price"`
+	Stock       int     `json:"stock"`
 }
 type ProductUpdate struct {
 	Name  *string  `json:"name"`
@@ -17,7 +20,7 @@ type ProductUpdate struct {
 	Stock *int     `json:"stock"`
 }
 
-func (p *Product) Sell(quantity int) error {
+func (p *Product) Sell(quantity int) error { // Why needs return
 	if quantity <= 0 {
 		return errors.New("Quantity must be positive")
 	}
@@ -104,13 +107,13 @@ func SortProductsByPrice(products []Product, ascending bool) []Product {
 func SearchProductsByName(products []Product, keyword string) []Product {
 	keyword = strings.ToLower(keyword)
 
+	if len(strings.TrimSpace(keyword)) == 0 {
+		return []Product{}
+	}
+
 	foundProducts := []Product{}
 
 	for _, product := range products {
-		if len(keyword) == 0 {
-			continue
-		}
-
 		if strings.Contains(strings.ToLower(product.Name), keyword) {
 			foundProducts = append(foundProducts, product)
 		}

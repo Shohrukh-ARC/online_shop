@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -8,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/joho/godotenv"
+
+	"example.com/online-shop/database"
 	"example.com/online-shop/product"
 )
 
@@ -44,214 +48,276 @@ func writeJSON(w http.ResponseWriter, statusCode int, data any) {
 	}
 }
 
-func getProducts(w http.ResponseWriter, r *http.Request, miniData []product.Product) {
-	id := r.URL.Query().Get("id")
-
-	if len(strings.TrimSpace(id)) == 0 {
-		writeJSON(w, http.StatusOK, miniData)
-	} else {
-		idNum, err := strconv.Atoi(id)
-		if err != nil {
-			http.Error(w, "Invalid product id", http.StatusBadRequest)
+func getProducts(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Wrong Method", http.StatusMethodNotAllowed)
 			return
 		}
 
-		if idNum >= 1 && idNum <= len(miniData) {
-			neededItem := miniData[idNum-1]
+		id := r.URL.Query().Get("id")
 
-			writeJSON(w, http.StatusOK, neededItem)
+		if id == "" {
+			products, err := database.GetProducts(db)
+			if err != nil {
+				log.Printf("Failed to retrieve products: %v", err)
+				http.Error(w, "Failed to retrieve products", http.StatusInternalServerError)
+				return
+			}
+
+			writeJSON(w, http.StatusOK, products)
 		} else {
-			http.Error(w, "Index out of range", http.StatusNotFound)
+			idNum, err := strconv.Atoi(id)
+			if err != nil || idNum < 1 {
+				http.Error(w, "Invalid product ID", http.StatusBadRequest)
+				return
+			}
+
+			product, err := database.GetProductsByID(db, idNum)
+			if errors.Is(err, sql.ErrNoRows) {
+				http.Error(w, "Product Not Found", http.StatusNotFound)
+				return
+			}
+
+			if err != nil {
+				log.Printf("Failed to retrieve product: %v", err)
+				http.Error(w, "Failed to retrieve product", http.StatusInternalServerError)
+				return
+			}
+
+			writeJSON(w, http.StatusOK, product)
 		}
 	}
 }
 
-func createProduct(w http.ResponseWriter, r *http.Request, miniData []product.Product) []product.Product {
-	var newProduct product.Product
-
-	err := json.NewDecoder(r.Body).Decode(&newProduct)
-	if err != nil {
-		http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
-		return miniData
-	}
-
-	err = validateProduct(newProduct)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return miniData
-	}
-
-	miniData = append(miniData, newProduct)
-
-	writeJSON(w, http.StatusCreated, newProduct)
-
-	return miniData
-}
-
-func updateProduct(w http.ResponseWriter, r *http.Request, miniData []product.Product) {
-	var newProduct product.Product
-
-	err := json.NewDecoder(r.Body).Decode(&newProduct)
-	if err != nil {
-		http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
-		return
-	}
-
-	id := r.URL.Query().Get("id")
-
-	if len(strings.TrimSpace(id)) == 0 {
-		http.Error(w, "No id given", http.StatusBadRequest)
-		return
-	}
-
-	idNum, err := strconv.Atoi(id)
-	if err != nil {
-		http.Error(w, "Wrong id type", http.StatusBadRequest)
-		return
-	}
-
-	if idNum < 1 || idNum > len(miniData) {
-		http.Error(w, "Product not found", http.StatusNotFound)
-		return
-	}
-
-	err = validateProduct(newProduct)
-
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	miniData[idNum-1] = newProduct
-
-	writeJSON(w, http.StatusOK, newProduct)
-}
-
-func patchProduct(w http.ResponseWriter, r *http.Request, miniData []product.Product) {
-	var update product.ProductUpdate
-
-	err := json.NewDecoder(r.Body).Decode(&update)
-	if err != nil {
-		http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
-		return
-	}
-
-	id := r.URL.Query().Get("id")
-
-	if len(strings.TrimSpace(id)) == 0 {
-		http.Error(w, "No id given", http.StatusBadRequest)
-		return
-	}
-
-	idNum, err := strconv.Atoi(id)
-	if err != nil {
-		http.Error(w, "Invalid product id", http.StatusBadRequest)
-		return
-	}
-
-	if idNum < 1 || idNum > len(miniData) {
-		http.Error(w, "Index out of range", http.StatusNotFound)
-		return
-	}
-
-	if update.Name == nil && update.Price == nil && update.Stock == nil {
-		http.Error(w, "No fields provided for update", http.StatusBadRequest)
-		return
-	}
-
-	if update.Name != nil {
-		if len(strings.TrimSpace(*update.Name)) == 0 {
-			http.Error(w, "Name should be provided", http.StatusBadRequest)
+func createProduct(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Wrong Method", http.StatusMethodNotAllowed)
 			return
 		}
-	}
 
-	if update.Price != nil {
-		if *update.Price <= 0 {
-			http.Error(w, "Price should be positive", http.StatusBadRequest)
+		var newProduct product.Product
+
+		err := json.NewDecoder(r.Body).Decode(&newProduct)
+		if err != nil {
+			http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
 			return
 		}
-	}
 
-	if update.Stock != nil {
-		if *update.Stock < 0 {
-			http.Error(w, "Stock cannot be negative", http.StatusBadRequest)
+		err = validateProduct(newProduct)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-	}
 
-	if update.Name != nil {
-		miniData[idNum-1].Name = strings.TrimSpace(*update.Name)
-	}
+		productID, err := database.CreateProduct(db, newProduct)
+		if err != nil {
+			log.Printf("Could not create product: %v", err)
+			http.Error(w, "Could not create product", http.StatusInternalServerError)
+			return
+		}
 
-	if update.Price != nil {
-		miniData[idNum-1].Price = *update.Price
-	}
+		newProduct.ProductID = productID
 
-	if update.Stock != nil {
-		miniData[idNum-1].Stock = *update.Stock
+		writeJSON(w, http.StatusCreated, newProduct)
 	}
-
-	writeJSON(w, http.StatusOK, miniData[idNum-1])
 }
 
-func deleteProduct(w http.ResponseWriter, r *http.Request, miniData []product.Product) []product.Product {
-	id := r.URL.Query().Get("id")
+func updateProduct(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 
-	if len(strings.TrimSpace(id)) == 0 {
-		http.Error(w, "No id given", http.StatusBadRequest)
-		return miniData
+		var updatedProduct product.Product
+
+		id := r.URL.Query().Get("id")
+
+		if id == "" {
+			http.Error(w, "No ID provided", http.StatusBadRequest)
+			return
+		}
+
+		idNum, err := strconv.Atoi(id)
+		if err != nil || idNum < 1 {
+			http.Error(w, "Invalid product ID", http.StatusBadRequest)
+			return
+		}
+
+		err = json.NewDecoder(r.Body).Decode(&updatedProduct)
+		if err != nil {
+			http.Error(w, "Invalid JSON body request", http.StatusBadRequest)
+			return
+		}
+
+		updatedProduct.ProductID = idNum
+
+		err = validateProduct(updatedProduct)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		err = database.UpdateProduct(db, updatedProduct)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "No requested product found", http.StatusNotFound)
+			return
+		}
+
+		if err != nil {
+			log.Printf("Failed to update product: %v", err)
+			http.Error(w, "Could not update product", http.StatusInternalServerError)
+			return
+		}
+
+		updatedProduct, err = database.GetProductsByID(db, idNum)
+		if err != nil {
+			log.Printf("Failed to retrieve updated product: %v", err)
+			http.Error(w, "Failed to retrieve updated product", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, updatedProduct)
 	}
+}
 
-	idNum, err := strconv.Atoi(id)
-	if err != nil {
-		http.Error(w, "Wrong id type", http.StatusBadRequest)
-		return miniData
+func patchProduct(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var update product.ProductUpdate
+
+		err := json.NewDecoder(r.Body).Decode(&update)
+		if err != nil {
+			http.Error(w, "Invalid JSON request body", http.StatusBadRequest)
+			return
+		}
+
+		id := r.URL.Query().Get("id")
+
+		if len(strings.TrimSpace(id)) == 0 {
+			http.Error(w, "No id given", http.StatusBadRequest)
+			return
+		}
+
+		idNum, err := strconv.Atoi(id)
+		if err != nil || idNum < 1 {
+			http.Error(w, "Invalid product ID", http.StatusBadRequest)
+			return
+		}
+
+		if update.Name == nil && update.Price == nil && update.Stock == nil {
+			http.Error(w, "No fields provided for update", http.StatusBadRequest)
+			return
+		}
+
+		if update.Name != nil {
+			if len(strings.TrimSpace(*update.Name)) == 0 {
+				http.Error(w, "Name should be provided", http.StatusBadRequest)
+				return
+			}
+		}
+
+		if update.Price != nil {
+			if *update.Price <= 0 {
+				http.Error(w, "Price should be positive", http.StatusBadRequest)
+				return
+			}
+		}
+
+		if update.Stock != nil {
+			if *update.Stock < 0 {
+				http.Error(w, "Stock cannot be negative", http.StatusBadRequest)
+				return
+			}
+		}
+
+		err = database.PatchProduct(db, update, idNum)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Product not found", http.StatusNotFound)
+			return
+		}
+
+		if err != nil {
+			log.Printf("Failed to patch product: %v", err)
+			http.Error(w, "Could not update product", http.StatusInternalServerError)
+			return
+		}
+
+		updatedProduct, err := database.GetProductsByID(db, idNum)
+		if err != nil {
+			log.Printf("Failed to retrieve updated product: %v", err)
+			http.Error(w, "Failed to retrieve updated product", http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, http.StatusOK, updatedProduct)
 	}
+}
 
-	if idNum >= 1 && idNum <= len(miniData) {
-		miniData = append(miniData[:idNum-1], miniData[idNum:]...)
-	} else {
-		http.Error(w, "Product not found", http.StatusNotFound)
-		return miniData
+func deleteProduct(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		id := r.URL.Query().Get("id")
+
+		if len(strings.TrimSpace(id)) == 0 {
+			http.Error(w, "No id given", http.StatusBadRequest)
+			return
+		}
+
+		idNum, err := strconv.Atoi(id)
+		if err != nil || idNum < 1 {
+			http.Error(w, "Invalid product ID", http.StatusBadRequest)
+			return
+		}
+
+		err = database.DeleteProduct(db, idNum)
+
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "Product not found", http.StatusNotFound)
+			return
+		}
+
+		if err != nil {
+			log.Printf("Failed to delete product: %v", err)
+			http.Error(w, "Failed to delete product", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
 	}
-
-	w.WriteHeader(http.StatusNoContent)
-
-	return miniData
 }
 
 func main() {
-	miniData := []product.Product{
-		{Name: "Laptop", Price: 800.00, Stock: 10},
-		{Name: "Gaming Laptop", Price: 1200.00, Stock: 5},
-		{Name: "Mouse", Price: 30.00, Stock: 50},
-		{Name: "Keyboard", Price: 75.00, Stock: 25},
-		{Name: "Monitor", Price: 250.00, Stock: 15},
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
 	}
 
-	http.HandleFunc("/products", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodGet:
-			getProducts(w, r, miniData)
+	db, err := database.ConnectDB()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-		case http.MethodPost:
-			miniData = createProduct(w, r, miniData)
+	defer db.Close()
 
-		case http.MethodDelete:
-			miniData = deleteProduct(w, r, miniData)
+	log.Println("Successfully connected to PostgreSQL!")
 
-		case http.MethodPut:
-			updateProduct(w, r, miniData)
-
-		case http.MethodPatch:
-			patchProduct(w, r, miniData)
-
-		default:
-			http.Error(w, "Method is not allowed", http.StatusMethodNotAllowed)
-		}
-	})
+	http.HandleFunc("/products", getProducts(db))
+	http.HandleFunc("/add/product", createProduct(db))
+	http.HandleFunc("/change/product", updateProduct(db))
+	http.HandleFunc("/update/product", patchProduct(db))
+	http.HandleFunc("/delete/product", deleteProduct(db))
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
