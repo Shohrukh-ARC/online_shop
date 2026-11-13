@@ -11,7 +11,6 @@ type Product struct {
 	Price float64
 	Stock int
 }
-
 type ProductUpdate struct {
 	Name  *string  `json:"name"`
 	Price *float64 `json:"price"`
