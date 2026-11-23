@@ -11,7 +11,9 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"example.com/online-shop/auth"
 	"example.com/online-shop/database"
+	"example.com/online-shop/handlers"
 	"example.com/online-shop/product"
 )
 
@@ -57,7 +59,7 @@ func getProducts(db *sql.DB) http.HandlerFunc {
 
 		id := r.URL.Query().Get("id")
 
-		if id == "" {
+		if len(strings.TrimSpace(id)) == 0 {
 			products, err := database.GetProducts(db)
 			if err != nil {
 				log.Printf("Failed to retrieve products: %v", err)
@@ -135,7 +137,7 @@ func updateProduct(db *sql.DB) http.HandlerFunc {
 
 		id := r.URL.Query().Get("id")
 
-		if id == "" {
+		if len(strings.TrimSpace(id)) == 0 {
 			http.Error(w, "No ID provided", http.StatusBadRequest)
 			return
 		}
@@ -313,11 +315,22 @@ func main() {
 
 	log.Println("Successfully connected to PostgreSQL!")
 
-	http.HandleFunc("/products", getProducts(db))
-	http.HandleFunc("/add/product", createProduct(db))
-	http.HandleFunc("/change/product", updateProduct(db))
-	http.HandleFunc("/update/product", patchProduct(db))
-	http.HandleFunc("/delete/product", deleteProduct(db))
+	http.HandleFunc("GET /products", getProducts(db))
+	http.HandleFunc("POST /add/product", createProduct(db))
+	http.HandleFunc("PUT /change/product", updateProduct(db))
+	http.HandleFunc("PATCH /update/product", patchProduct(db))
+	http.HandleFunc("DELETE /delete/product", deleteProduct(db))
+	http.HandleFunc("POST /admin/login", auth.LoginHandler(db))
+	http.Handle("GET /admin/profile", auth.AdminAuthMiddleware(db, http.HandlerFunc(auth.AdminProfileHandler)))
+	http.Handle("GET /admin/superadmin", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(http.HandlerFunc(auth.AdminProfileHandler))))
+	http.Handle("POST /admin/create", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(handlers.CreateAdminHandler(db))))
+	http.Handle("GET /admin/list", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(handlers.GetAdminHandler(db))))
+	http.Handle("GET /admin/{id}", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(handlers.GetAdminByIDHandler(db))))
+	http.Handle("PATCH /admin/{id}", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(handlers.PatchAdminHandler(db))))
+	http.Handle("PATCH /admin/{id}/deactivate", auth.AdminAuthMiddleware(db, auth.RequireAdminRole(1)(handlers.DeactivateAdminHandler(db))))
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
+
+// eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJvbmxpbmUtc2hvcCIsInN1YiI6IjY2IiwiZXhwIjoxNzk1NDIzNzM0LCJpYXQiOjE3OTU0MjI4MzR9.ERJWImtDQ48SfXjMNhrksKbmSPcYIi_Z7eB6d3ncWwY
+// eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJvbmxpbmUtc2hvcCIsInN1YiI6IjY3IiwiZXhwIjoxNzk1MDgzNDAyLCJpYXQiOjE3OTUwODI1MDJ9.HcXp-AUzq0wffNj8B6zst98AkHXJuJOMRKEmjgRC9mg

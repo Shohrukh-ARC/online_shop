@@ -3,11 +3,14 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"example.com/online-shop/admin"
 )
+
+var ErrLastSuperAdmin = errors.New("cannot deactivate the last active super admin")
 
 func CreateAdmin(db *sql.DB, a admin.Admin) (int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -70,8 +73,9 @@ func GetAdminByEmail(db *sql.DB, email string) (admin.Admin, error) {
 
 	var a admin.Admin
 
-	query := `
-		SELECT adminid, name, email, password_hash, role_id,
+	// SELECT * is not used to match QueryRowContext
+	query := ` 
+		SELECT adminid, name, email, password_hash, role_id,    
        					is_active, created_at, updated_at
 		FROM admin
 		WHERE email = $1
@@ -187,6 +191,57 @@ func PatchAdmin(db *sql.DB, adminID int, updates admin.AdminUpdate) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start trancation: %w", err)
+	}
+	defer tx.Rollback()
+
+	lock_query := `
+		SELECT pg_advisory_xact_lock(1001);
+	`
+	_, err = tx.ExecContext(ctx, lock_query)
+	if err != nil {
+		return fmt.Errorf("failed to activate lock query: %w", err)
+	}
+
+	var roleID int
+	var isActive bool
+
+	deactivateQuery := `
+		SELECT role_id, is_active
+		FROM admin
+		WHERE adminid = $1;
+	`
+
+	err = tx.QueryRowContext(ctx, deactivateQuery, adminID).Scan(
+		&roleID,
+		&isActive,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	if err != nil {
+		return fmt.Errorf("failed to retrieve admin with given role id and activeness: %w", err)
+	}
+
+	if roleID == 1 && isActive && ((updates.RoleID != nil && *updates.RoleID != 1) || (updates.IsActive != nil && !*updates.IsActive)) {
+
+		var activeSuperAdmins int
+		countQuery := `
+			SELECT COUNT(*)
+			FROM admin
+			WHERE role_id = 1 AND is_active = TRUE;
+		`
+		if err := tx.QueryRowContext(ctx, countQuery).Scan(&activeSuperAdmins); err != nil {
+			return fmt.Errorf("failed to count active super admins: %w", err)
+		}
+
+		if activeSuperAdmins <= 1 {
+			return ErrLastSuperAdmin
+		}
+	}
+
 	query := `
 		UPDATE admin
 		SET
@@ -198,7 +253,7 @@ func PatchAdmin(db *sql.DB, adminID int, updates admin.AdminUpdate) error {
 		WHERE adminid = $5;
 	`
 
-	result, err := db.ExecContext(
+	result, err := tx.ExecContext(
 		ctx,
 		query,
 		updates.Name,
@@ -220,12 +275,66 @@ func PatchAdmin(db *sql.DB, adminID int, updates admin.AdminUpdate) error {
 		return sql.ErrNoRows
 	}
 
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("failed to commit administrator update: %w", err)
+	}
+
 	return nil
 }
 
 func DeactivateAdmin(db *sql.DB, id int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	tx, err := db.BeginTx(ctx2, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start trancation: %w", err)
+	}
+	defer tx.Rollback()
+
+	lock_query := `
+		SELECT pg_advisory_xact_lock(1001);
+	`
+	_, err = tx.ExecContext(ctx2, lock_query)
+	if err != nil {
+		return fmt.Errorf("failed to activate lock query: %w", err)
+	}
+
+	var roleID int
+	var isActive bool
+
+	deactivateQuery := `
+		SELECT role_id, is_active
+		FROM admin
+		WHERE adminid = $1;
+	`
+
+	err = tx.QueryRowContext(ctx2, deactivateQuery, id).Scan(
+		&roleID,
+		&isActive,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	if err != nil {
+		return fmt.Errorf("failed to retrieve admin with given role id and activeness: %w", err)
+	}
+
+	if roleID == 1 && isActive {
+		var activeSuperAdmins int
+		countQuery := `
+			SELECT COUNT(*)
+			FROM admin
+			WHERE role_id = 1 AND is_active = TRUE;
+		`
+		if err := tx.QueryRowContext(ctx2, countQuery).Scan(&activeSuperAdmins); err != nil {
+			return fmt.Errorf("failed to count active super admins: %w", err)
+		}
+
+		if activeSuperAdmins <= 1 {
+			return ErrLastSuperAdmin
+		}
+	}
 
 	query := `
 		UPDATE admin
@@ -234,7 +343,7 @@ func DeactivateAdmin(db *sql.DB, id int) error {
 		WHERE adminID = $1
 	`
 
-	result, err := db.ExecContext(ctx, query, id)
+	result, err := tx.ExecContext(ctx2, query, id)
 	if err != nil {
 		return fmt.Errorf("failed to update admin status: %w", err)
 	}
@@ -248,5 +357,9 @@ func DeactivateAdmin(db *sql.DB, id int) error {
 		return sql.ErrNoRows
 	}
 
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("Failed to commit changes: %w", err)
+	}
 	return nil
 }

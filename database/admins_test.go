@@ -628,3 +628,165 @@ func TestDeactivateAdmin(t *testing.T) {
 		t.Errorf("Expected sql.ErrNoRows, got %v", err)
 	}
 }
+
+func TestLastSuperAdminProtection(t *testing.T) {
+	err := godotenv.Overload("../.env")
+	if err != nil {
+		t.Fatalf("Failed to load test environment: %v", err)
+	}
+
+	db, err := database.ConnectDB()
+	if err != nil {
+		t.Fatal("Failed to connect to database:", err)
+	}
+
+	t.Cleanup(func() {
+		db.Close()
+	})
+
+	var dbName string
+
+	err = db.QueryRow("SELECT current_database()").Scan(&dbName)
+	if err != nil {
+		t.Fatalf("Failed to retrieve database name: %v", err)
+	}
+
+	if dbName != "online_shop_test" {
+		t.Fatalf("Expected online_shop_test, connected to %s", dbName)
+	}
+
+	passwordHash := "$argon2id$v=19$m=19456,t=2,p=1$L3TWzxV82IT16DnW3KVgbA$8UJBpoDkOQFLRhHNkp+cNGeN6WC1sIC4wNPmzZdvG68"
+
+	testAdmin := admin.Admin{
+		Name:         "Alex Morgan",
+		Email:        "alex.morgan@example.com",
+		PasswordHash: passwordHash,
+		RoleID:       1,
+	}
+
+	superAdminID, err := database.CreateAdmin(db, testAdmin)
+	if err != nil {
+		t.Fatalf("failed to create super admin: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := db.Exec(
+			"DELETE FROM admin WHERE adminid = $1",
+			superAdminID,
+		)
+		if err != nil {
+			t.Errorf("Failed to clean up test administrator: %v", err)
+		}
+	})
+
+	err = database.DeactivateAdmin(db, superAdminID)
+	if !errors.Is(err, database.ErrLastSuperAdmin) {
+		t.Fatalf("Expected %v, got %v", database.ErrLastSuperAdmin, err)
+	}
+
+	superAdmin, err := database.GetAdministratorByID(db, superAdminID)
+	if err != nil {
+		t.Fatalf("failed to retrieve super admin: %v", err)
+	}
+
+	if !superAdmin.IsActive {
+		t.Fatal("Administrator should be active")
+	}
+
+	var newRoleID int = 2
+	updatedAdmin := admin.AdminUpdate{
+		RoleID: &newRoleID,
+	}
+
+	err = database.PatchAdmin(db, superAdminID, updatedAdmin)
+	if !errors.Is(err, database.ErrLastSuperAdmin) {
+		t.Fatalf("Expected %v, got %v", database.ErrLastSuperAdmin, err)
+	}
+
+	superAdmin, err = database.GetAdministratorByID(db, superAdminID)
+	if err != nil {
+		t.Fatalf("failed to get super admin with the given id: %v", err)
+	}
+	if superAdmin.RoleID != 1 {
+		t.Fatal("Super admin ID should not change")
+	}
+
+	var newName string = "Alex Williams"
+	updatedAdmin = admin.AdminUpdate{
+		Name: &newName,
+	}
+
+	err = database.PatchAdmin(db, superAdminID, updatedAdmin)
+	if err != nil {
+		t.Fatalf("failed to patch admin information: %v", err)
+	}
+
+	superAdmin, err = database.GetAdministratorByID(db, superAdminID)
+	if err != nil {
+		t.Fatalf("failed to get super admin with the given id: %v", err)
+	}
+	if superAdmin.Name != "Alex Williams" {
+		t.Fatalf("Expected Alex Williams, got %s", superAdmin.Name)
+	}
+
+	if superAdmin.RoleID != 1 || superAdmin.IsActive == false {
+		t.Fatal("Either admin is not super admin or is not active")
+	}
+
+	passwordHash_2 := "$argon2id$v=19$m=19456,t=2,p=1$3e+kv8zbPeeKXK9IVUOH0A$3JUJ4EPAakfmEXB6Ckuq5a7DEr5/kevohDCfAOhA194"
+
+	testAdmin_2 := admin.Admin{
+		Name:         "Michael Brown",
+		Email:        "michael.brown@example.com",
+		PasswordHash: passwordHash_2,
+		RoleID:       1,
+	}
+
+	superAdminID_2, err := database.CreateAdmin(db, testAdmin_2)
+	if err != nil {
+		t.Fatalf("failed to create super admin: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, err := db.Exec(
+			"DELETE FROM admin WHERE adminid = $1",
+			superAdminID_2,
+		)
+		if err != nil {
+			t.Errorf("Failed to clean up test administrator: %v", err)
+		}
+	})
+
+	err = database.DeactivateAdmin(db, superAdminID_2)
+	if err != nil {
+		t.Fatalf("Failed to deactivate second Super Admin: %v", err)
+	}
+
+	superAdmin_2, err := database.GetAdministratorByID(db, superAdminID_2)
+	if err != nil {
+		t.Fatalf("failed to retrieve super admin: %v", err)
+	}
+
+	if superAdmin_2.IsActive {
+		t.Fatal("The second super admin should be inactive")
+	}
+
+	superAdmin, err = database.GetAdministratorByID(db, superAdminID)
+	if err != nil {
+		t.Fatalf("failed to get super admin with the given id: %v", err)
+	}
+
+	if superAdmin.RoleID != 1 || !superAdmin.IsActive {
+		t.Fatal("Either admin is not super admin or is not active")
+	}
+}
+
+// err := godotenv.Overload("../.env")
+// 	if err != nil {
+// 		t.Fatalf("Failed to load test environment: %v", err)
+// 	}
+
+// err := godotenv.Overload("../.env.test")
+// if err != nil {
+//     t.Fatalf("Failed to load test environment: %v", err)
+// }
